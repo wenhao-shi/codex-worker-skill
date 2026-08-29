@@ -1,8 +1,8 @@
-# `/codex` skill design
+# `/codex-worker` skill design
 
-Status: **implemented (v4)**. This file is the source of truth for the protocol. The runner (`skills/codex/scripts/run.py`) and `SKILL.md` are the source of truth for shipped behavior. If this file disagrees with the runner, the runner wins and this file should be corrected. [`README.md`](../README.md) is the human index.
+Status: **implemented (v4)**. This file is the source of truth for the protocol. The runner (`skills/codex-worker/scripts/run.py`) and `SKILL.md` are the source of truth for shipped behavior. If this file disagrees with the runner, the runner wins and this file should be corrected. [`README.md`](../README.md) is the human index.
 
-v4 lives in `skills/codex/` and installs to `~/.cursor/skills/codex`. WT1 is `<WT0>/scratch/codex/<id>/wt`. Session metadata is `~/.codex/codex-skill/sessions/<id>/` (override with `CODEX_SKILL_HOME`). Codex must not be able to rewrite the apply patch or the lock.
+v4 lives in `skills/codex-worker/` and installs as `codex-worker` in each host skill root. WT1 is `<WT0>/scratch/codex/<id>/wt`. Session metadata is `~/.codex/codex-worker-skill/sessions/<id>/` (override with `CODEX_SKILL_HOME`). Codex must not be able to rewrite the apply patch or the lock.
 
 Five classes are used throughout. They are not interchangeable.
 
@@ -24,7 +24,7 @@ Sol (GPT-5.6) is available on GPT Plus through the local Codex CLI. It is delibe
 
 The user still wants Sol in the workflow without driving the Codex TUI by hand.
 
-`/codex` is the opt-in path: a Cursor skill that shells out to the existing local RPC, then stops for parent/user review. It is a guest SWE path. It is not a pstack role and not an architect runner.
+`/codex-worker` is the opt-in path: an agent-agnostic skill that shells out to the existing local RPC, then stops for parent/user review. It is a guest SWE path. It is not a pstack role and not an architect runner.
 
 Plus billing is part of the reason this skill exists. Invoking a local `codex` binary does not by itself prove subscription authentication. API-key usage is billed through the API account.
 
@@ -34,7 +34,7 @@ Plus billing is part of the reason this skill exists. Invoking a local `codex` b
 
 ### Goals
 
-- Invoke Sol with an effort flag from Cursor chat, billed as ChatGPT subscription use, not silent API-key spend.
+- Invoke Sol with an effort flag from the parent chat, billed as ChatGPT subscription use, not silent API-key spend.
 - Isolate Sol's edits from the user's live checkout so review can name **only** Sol's delta, even when the user tree is dirty.
 - Keep integration authority with the parent agent or the user. Codex does not accept its own work.
 - Leave the user's git refs, real index, and pre-session dirty bytes alone until someone with authority applies a patch. Never commit or push as a side effect of the skill.
@@ -43,9 +43,8 @@ Plus billing is part of the reason this skill exists. Invoking a local `codex` b
 
 - A pstack role, automatic or otherwise.
 - Cursor `Task` with `gpt-5.6-sol-*` slugs. That bills Cursor and defeats Plus.
-- Claimed support for Claude Code, OpenCode, or Pi. The task contract and WT0 input should not be Cursor-private. Support is claimed only for hosts that are validated. v4 claims Cursor.
 - A shared `workspace/` dump that every agent writes. That is shared mutable state.
-- Codex TUI, `codex resume`, a queue, or a second `/codex review` verb.
+- Codex TUI, `codex resume`, a queue, or a second `/codex-worker review` verb.
 - `codex apply`, `codex mcp-server`, or `danger-full-access`.
 - The skill turning on network access, connectors, or a wider sandbox because the task "needs" it.
 - Silently running `git init` in an unversioned user project.
@@ -55,7 +54,7 @@ Plus billing is part of the reason this skill exists. Invoking a local `codex` b
 
 ### Related context (not this design)
 
-pstack roles, architect runners, and arena judges are a different path. They do not decide isolation or lifecycle for `/codex`.
+pstack roles, architect runners, and arena judges are a different path. They do not decide isolation or lifecycle for `/codex-worker`.
 
 ---
 
@@ -63,11 +62,12 @@ pstack roles, architect runners, and arena judges are a different path. They do 
 
 | Item | Class | Record |
 | --- | --- | --- |
-| Opt-in Cursor skill, not a pstack role | Decided | §1, §5 |
-| v4 claimed host is Cursor; other hosts unclaimed | Decided | §5.1 |
-| `/codex [low\|medium\|high\|xhigh\|max] <task>`, default `high` | Decided | §5 |
-| Optional effort is an exact first-token match only | Decided | §5.2 |
-| Local `codex exec`, `-m gpt-5.6-sol`, `-c model_reasoning_effort=...` | Decided | §5 |
+| Opt-in skill, not a pstack role | Decided | §1, §5 |
+| Agent-agnostic packaging; same runner on every host | Decided | §5.1 |
+| `/codex-worker [model] [effort] <task>`; default model alias `sol`; default effort `high` when listed | Decided | §5 |
+| Parent resolves aliases or asks; does not guess | Decided | §5.2 |
+| Local `codex exec`, `-m <catalog slug>`, `-c model_reasoning_effort=...` | Decided | §5 |
+| Catalog file `models.txt` from `codex debug models` (`visibility=list`); refresh on first use and on `codex exec` failure | Decided | §5.2 |
 | Not Cursor Task with Sol | Decided | §2 |
 | Require ChatGPT file auth; refuse API keys; bind `cli_auth_credentials_store=file` | Decided | §5.3 |
 | Live billed credential selection | Evidence | §5.3 |
@@ -138,42 +138,47 @@ Git vocabulary collision: git also uses "working tree" and `git worktree`. This 
 **Class:** Decided for the command shape, host claim, parse rule, auth check, and task contract.
 
 ```
-/codex [low|medium|high|xhigh|max] <task>
+/codex-worker [model] [effort] <task>
 ```
 
 | Rule | Detail |
 | --- | --- |
-| Default effort | `high`. Below the user's interactive Codex default `xhigh` on purpose. |
-| Model flag | `-m gpt-5.6-sol`. Never a Cursor slug such as `gpt-5.6-sol-high`. |
-| Effort flag | `-c model_reasoning_effort="<level>"` |
+| Default model | Alias `sol`, resolved to a catalog slug via `models.txt`. |
+| Default effort | `high` when that slug lists it; otherwise the catalog `default=`. |
+| Model flag | `-m <catalog slug>`. Never a Cursor slug such as `gpt-5.6-sol-high`. |
+| Effort flag | `-c model_reasoning_effort="<level>"` from that slug's list. |
 | Empty task | Error. |
 | Shape | One-shot `codex exec`. No TUI, no `resume`, no queue. |
 | Sandbox | `workspace-write` on the session tree. Not `danger-full-access`. See §10.1. |
-| `/codex review` as a verb | Deferred as a support limit: v4 has no such verb. |
+| `/codex-worker review` as a verb | Deferred as a support limit: v4 has no such verb. |
 
-v4 is edit-capable exec with an effort flag, then review by the parent or user **after Codex has stopped**.
+v4 is edit-capable exec with a model and effort flag, then review by the parent or user **after Codex has stopped**.
 
 Environment facts (not a portability promise):
 
 - The runner looks up `codex` on `PATH`, then common local install locations.
 - Also exist, not in v4: `codex review`, `codex apply`, `codex mcp-server`
-- Installed CLI observed at review time: `0.149.1`. Local model cache listed `gpt-5.6-sol` and the effort levels in this table. That supports spelling. It does not prove account access or a live run.
+- Installed CLI observed at review time: `0.149.1`. `codex debug models` is a debug dump, not a product `list` command.
 
 ### 5.1 Host claim
 
 **Class:** Decided.
 
-v4 **claims** Cursor only. The parent passes an explicit WT0 (workspace root) and a resolved task. That pair should not require Cursor-private APIs. Other hosts remain unclaimed until validated. Unclaimed is not "works everywhere."
+The skill is **agent-agnostic**. The parent passes an explicit WT0 (workspace root) and a resolved task. Copy `skills/codex-worker/` into the host skill root (`~/.cursor/skills`, `~/.claude/skills`, `~/.agents/skills`). Invocation is `/codex-worker` (Cursor, Claude Code), `$codex-worker` (Codex CLI), `/skill:codex-worker` (Pi), or the host's skill tool (OpenCode). Live billed runs on every host remain unrun; packaging does not require Cursor-private APIs.
 
-### 5.2 Effort parse
+### 5.2 Model and effort parse
 
-**Class:** Decided. This is a clarification of the decided invocation. The old line "unknown effort token: error" cannot coexist with optional effort followed by free text.
+**Class:** Decided.
 
-- If the first token is exactly one of `low`, `medium`, `high`, `xhigh`, `max`, it is the effort. The rest is the task.
-- Otherwise the entire argument string is the task, effort `high`.
-- `/codex hihg fix the parser` is a task starting with `hihg`, not a misspelled effort and not a silent map to `high`.
+The parent reads `<skill>/models.txt`. Refresh that file when it is missing, and when `codex exec` fails (stderr `codex-worker-skill: refresh-models`). Do not refresh on pre-exec runner refusals. The parent writes the file with `codex debug models` piped through `jq` (`visibility=list` only), `--bundled` if refresh fails. Official docs are not the catalog.
 
-Reserved effort words as first token are therefore special. A task that legitimately starts with the word `high` must not use the optional-effort form, or must be written so the first token is not in that set.
+- Optional first token: model alias or slug. Default alias `sol`. Family names (`gpt-5.6`, `5.6`) and any non-unique match: ask. Do not guess. Do not default the family to Sol.
+- Optional next token: effort, exact match against that slug's list. A misspelling (`hgih`) is a question, not task text and not a silent map to `high`.
+- If omitted, effort is `high` when listed, else the line's `default=`.
+- The rest is the task. Empty task: error.
+- Pass the runner the canonical slug, not `sol`.
+
+`models.txt` is a debug-catalog snapshot. It is not account entitlement. Hidden slugs are omitted.
 
 ### 5.3 Authentication
 
@@ -360,11 +365,11 @@ R1's working tree is **WT0's apply target**, not WT1.
 
 The identity key starts from `realpath` of WT0:
 
-1. Start from the Cursor workspace root, not an arbitrary nested cwd. That path is the explicit WT0 input.
+1. Start from the workspace root, not an arbitrary nested cwd. That path is the explicit WT0 input.
 2. **Git mode** only if that directory *is* a git working tree: `git rev-parse --show-toplevel` equals this path. The apply target is that path.
 3. **Do not walk above the workspace.** A parent `git init` on `Documents` or `$HOME` must not become the snapshot root. If the workspace is not itself a git root, use the copy path on the workspace folder, and warn if an ancestor `.git` exists. The apply target is still that workspace folder.
 4. Nested extra `.git` under the workspace is refused before snapshot or copy (§12 J).
-5. Refuse `/codex` if cwd is inside an existing WT1.
+5. Refuse `/codex-worker` if cwd is inside an existing WT1.
 
 ### Overlap, not only string equality
 
@@ -376,7 +381,7 @@ Disjoint linked worktrees (`/proj` and `/proj-feature` as siblings) remain indep
 
 ### Atomic acquisition
 
-Checking for an owner and then recording ownership as two steps allows two starts to both pass the check. Acquisition is **one atomic operation** under `~/.codex/codex-skill/acquire.lock` (flock). Session metadata writes reload under that lock and refuse to revive a terminal record.
+Checking for an owner and then recording ownership as two steps allows two starts to both pass the check. Acquisition is **one atomic operation** under `~/.codex/codex-worker-skill/acquire.lock` (flock). Session metadata writes reload under that lock and refuse to revive a terminal record.
 
 ### Leftover WT1 vs ownership
 
@@ -384,7 +389,7 @@ An unexplained leftover session worktree (no proven terminal record) still block
 
 ### What this forbids
 
-Two top-level `/codex` runs on the same WT0. Two runs whose apply targets nest, including the git-root / subdirectory-copy case. Nested sessions inside WT1.
+Two top-level `/codex-worker` runs on the same WT0. Two runs whose apply targets nest, including the git-root / subdirectory-copy case. Nested sessions inside WT1.
 
 ### What this allows
 
@@ -445,7 +450,7 @@ Ownership does not end when `codex exec` exits. `reviewable` and `integrating` s
 
 ### Allowed operations
 
-| State | Codex writes WT1 | Apply to WT0 | New `/codex` on overlapping target |
+| State | Codex writes WT1 | Apply to WT0 | New `/codex-worker` on overlapping target |
 | --- | --- | --- | --- |
 | initializing | no | no | no |
 | running | yes | no | no |
@@ -490,7 +495,7 @@ A recover that sees `running` with no published worker pid must distinguish "sti
 
 **Double complete.** Authorization only from `reviewable`. Apply outcome only from `integrating`. A second accept is an error.
 
-**Immutable at create.** Session id, WT0 realpath, apply-target realpath, `C0` if git, `SNAP` sha, resolved task, effort, start time.
+**Immutable at create.** Session id, WT0 realpath, apply-target realpath, `C0` if git, `SNAP` sha, resolved task, model slug, effort, start time.
 
 **Mutable.** Phase, pid, heartbeat, artifact paths, integrating/apply records, cleanup-failed flag.
 
@@ -518,7 +523,7 @@ start → Codex work → Codex stops → parent/user reviews → parent/user aut
 
 Codex may write in WT1 while `running`. After stop-for-review, no more candidate writes. Parent reads the apply patch plus structured review, not Codex's claim that the result looks good.
 
-A global log pit was rejected. Per-run WT1 under WT0. Per-run metadata under `~/.codex/codex-skill/sessions/<id>/`.
+A global log pit was rejected. Per-run WT1 under WT0. Per-run metadata under `~/.codex/codex-worker-skill/sessions/<id>/`.
 
 ### 10.1 Execution contract
 
@@ -529,7 +534,7 @@ v4 contract:
 - **Effective writable roots for Codex:** WT1, plus sandbox temp as the CLI defines it. Not WT0. Not runner metadata. The skill passes `-c sandbox_workspace_write.writable_roots=[]`. It does not pass `--add-dir` or `danger-full-access`. It does not enable network or connectors.
 - **Approvals:** `-c approval_policy="never"`. No permission expansion. A denied or out-of-sandbox operation returns to the parent as failure or a recorded denial. The skill must not answer a sandbox escalation by widening the sandbox.
 - If the user's existing Codex config already enables network, that is user config, not the skill granting it. Disclose it (best-effort parse). Do not treat it as "declared effects for this task."
-- **Ownership records and the final apply patch** live under `CODEX_SKILL_HOME` (default `~/.codex/codex-skill/sessions/<id>/`), outside WT1. Codex must not be able to rewrite them.
+- **Ownership records and the final apply patch** live under `CODEX_SKILL_HOME` (default `~/.codex/codex-worker-skill/sessions/<id>/`), outside WT1. Codex must not be able to rewrite them.
 - Start **refuses** if WT0 or runner metadata is under `/tmp`/`TMPDIR`, if metadata would sit inside WT1, or if listed user `writable_roots` overlap WT0 or metadata.
 - Work that needs broader authority than this contract **refuses** before exec. "The task needs network" is not an auto-grant.
 - CLI `-c` flags are intended to override project `.codex/config.toml` for those keys. Confirmation that this wins on installed Codex 0.149.1 has not been run (Evidence).
@@ -569,7 +574,7 @@ flowchart TB
     WT1["worktree checkout of SNAP"]
   end
 
-  subgraph meta["~/.codex/codex-skill/sessions/id. Runner owns this."]
+  subgraph meta["~/.codex/codex-worker-skill/sessions/id. Runner owns this."]
     RECS["ownership, phase, apply records"]
     PROMPT["prompt.md"]
     REPLY["reply.md"]
@@ -590,7 +595,7 @@ flowchart TB
 
 | Actor | May write | Must not write |
 | --- | --- | --- |
-| Parent / user | Invoke `/codex`; authorize; inspect WT0 after an apply attempt | An "accepted" bit; lock release; apply implementation |
+| Parent / user | Invoke `/codex-worker`; authorize; inspect WT0 after an apply attempt | An "accepted" bit; lock release; apply implementation |
 | Runner | Snapshot object; prompt; inventory; apply patch; phase/ownership records; apply onto WT0 after authorize | User branch name, `HEAD`, real index, remote, Codex-writable rewrite of those records |
 | Codex | Files inside WT1 while `running`; stdout captured as `reply.md` | WT0; refs; index; remote; ownership records; apply patch; an "accepted" bit |
 
@@ -606,7 +611,7 @@ After authorization, while integrating: original working tree via apply, still u
 
 WT1 only. Gitignored if the project ignores `scratch/`. Codex may write here while `running`.
 
-### Per-run metadata (`$CODEX_SKILL_HOME/sessions/<id>/`, default `~/.codex/codex-skill/sessions/<id>/`)
+### Per-run metadata (`$CODEX_SKILL_HOME/sessions/<id>/`, default `~/.codex/codex-worker-skill/sessions/<id>/`)
 
 Outside WT1. Codex must not be able to rewrite these.
 
@@ -631,12 +636,13 @@ The global lock is `$CODEX_SKILL_HOME/acquire.lock` (flock).
 
 ### User-level skill
 
-Source: `skills/codex/` in this directory. Install: copy that folder to `~/.cursor/skills/codex`.
+Source: `skills/codex-worker/` in this directory. Install: copy that folder as `codex-worker` into `~/.cursor/skills`, `~/.claude/skills`, and `~/.agents/skills`.
 
 | File | Job |
 | --- | --- |
 | `SKILL.md` | Trigger, parse, R1-R2, when to call the runner, parent judgment, support limits |
-| `agents/openai.yaml` | `allow_implicit_invocation: false` (Codex-host gate; Cursor uses `disable-model-invocation`) |
+| `models.txt` | Parent-written catalog (`visibility=list`). Missing on first use. Not committed. |
+| `agents/openai.yaml` | `allow_implicit_invocation: false` (Codex-host gate; Cursor and Claude Code use `disable-model-invocation`) |
 | `references/prompt.md` | RPC body / task-contract checklist |
 | `scripts/run.sh` | Thin wrapper |
 | `scripts/run.py` | Ownership acquire, snapshot or copy, exec, inventory, apply, reject, recover, lock release |

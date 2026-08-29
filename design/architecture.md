@@ -1,14 +1,14 @@
-# `/codex` architecture
+# `/codex-worker` architecture
 
-Companion to [`codex-skill-design.md`](codex-skill-design.md). That file is the source of truth for the protocol. This file is the picture: who acts, what they may touch, and how a run moves. [`README.md`](../README.md) is the human index (what `/codex` is, how to install it, runner verbs). If the two design files disagree, the design wins for protocol. If either disagrees with the runner, the runner wins for behavior and the docs should be corrected.
+Companion to [`codex-worker-skill-design.md`](codex-worker-skill-design.md). That file is the source of truth for the protocol. This file is the picture: who acts, what they may touch, and how a run moves. [`README.md`](../README.md) is the human index (what `/codex-worker` is, how to install it, runner verbs). If the two design files disagree, the design wins for protocol. If either disagrees with the runner, the runner wins for behavior and the docs should be corrected.
 
-Shipped as **v4**. Skill source: `skills/codex/`. Install: `~/.cursor/skills/codex`. Runner: `scripts/run.sh` → `scripts/run.py`. Parent instructions: `SKILL.md`.
+Shipped as **v4**. Product: `codex-worker-skill`. Skill source: `skills/codex-worker/`. Install folder name: `codex-worker`. Runner: `scripts/run.sh` → `scripts/run.py`. Parent instructions: `SKILL.md`. Agent-agnostic packaging.
 
 ---
 
 ## 1. What the system is
 
-The user types `/codex` in Cursor. The **parent agent** turns that into a self-contained task and calls a **runner**. The runner freezes the user's dirty checkout, gives **Codex** a private tree, and waits. Codex (GPT-5.6 Sol via local `codex exec`) may edit only that private tree. When it stops, the parent and user review **Sol's delta**, not Codex's opinion. Only they may authorize apply. The runner, not Codex, writes the user's tree, and only after that authorization.
+The user types `/codex-worker`. The **parent agent** turns that into a self-contained task and calls a **runner**. The runner freezes the user's dirty checkout, gives **Codex** a private tree, and waits. Codex (local `codex exec`) may edit only that private tree. When it stops, the parent and user review **Sol's delta**, not Codex's opinion. Only they may authorize apply. The runner, not Codex, writes the user's tree, and only after that authorization.
 
 Codex is a guest SWE. It is not a pstack role. It does not bill Cursor Task. Internal Codex subagents are workers of one session, not a second owner.
 
@@ -20,7 +20,7 @@ flowchart TB
   CODEX[Codex agent]
   WORKERS[Internal Codex subagents]
 
-  USER -->|"invokes /codex, keep or drop, authorize"| PARENT
+  USER -->|"invokes /codex-worker, keep or drop, authorize"| PARENT
   PARENT -->|"resolved task, judgment"| RUNNER
   RUNNER -->|"codex exec, cwd = WT1"| CODEX
   CODEX --> WORKERS
@@ -55,13 +55,13 @@ sequenceDiagram
   participant WT0 as WT0 user checkout
   participant WT1 as WT1 session tree
 
-  User->>Parent: /codex high fix the parser
+  User->>Parent: /codex-worker sol high fix the parser
   Parent->>Parent: resolve task, no chat pronouns
   Parent->>Runner: start on this WT0
   Runner->>Runner: refuse if overlapping owner exists
   Runner->>WT0: SNAP via temp index, HEAD and real index stay
   Runner->>WT1: worktree at SNAP
-  Runner->>Codex: exec, model gpt-5.6-sol, effort flag
+  Runner->>Codex: exec, catalog slug, effort flag
   Codex->>WT1: edit while running
   Note over Codex,WT1: Internal subagents write here too
   Codex-->>Runner: process exits
@@ -101,7 +101,7 @@ Goal: name **only Sol's delta** even when WT0 is dirty. No stash. No commit on t
 
 **WT0** is the user's checkout, the apply target. **WT1** is the session tree under `scratch/codex/<id>/wt`. **C0** is `HEAD` at init. **SNAP** is the freeze of WT0's included dirty tree. Parent of `SNAP` is `C0` when git exists.
 
-Session metadata (phase, apply patch, fingerprints) lives under `~/.codex/codex-skill/sessions/<id>/`, not inside WT1. Codex must not be able to rewrite the apply artifact or the lock.
+Session metadata (phase, apply patch, fingerprints) lives under `~/.codex/codex-worker-skill/sessions/<id>/`, not inside WT1. Codex must not be able to rewrite the apply artifact or the lock.
 
 ```mermaid
 flowchart TB
@@ -116,7 +116,7 @@ flowchart TB
     SNAP["SNAP: freeze of included dirty tree"]
   end
 
-  subgraph meta ["~/.codex/codex-skill/sessions/id. Runner owns this."]
+  subgraph meta ["~/.codex/codex-worker-skill/sessions/id. Runner owns this."]
     RECS[Ownership and phase records]
     INV[Inventory and apply patch]
   end
@@ -275,7 +275,7 @@ Containment is on `realpath` path components, not raw prefix (`/project` does no
 
 Do not walk above the workspace to find a parent git root for SNAP. A `git init` on `$HOME` must not become the snapshot. Nested sessions inside WT1 are refused. Leftover overlap checks do walk ancestors. That is a different rule.
 
-Internal Codex subagents do not mint a second identity. Two parent `/codex` runs on overlapping targets do.
+Internal Codex subagents do not mint a second identity. Two parent `/codex-worker` runs on overlapping targets do.
 
 ---
 

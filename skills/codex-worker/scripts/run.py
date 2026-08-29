@@ -23,7 +23,7 @@ from pathlib import Path
 from string import Template
 from typing import Any, Iterator
 
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+REFRESH_MODELS_MARK = "codex-worker-skill: refresh-models"
 OWNING_PHASES = (
     "initializing",
     "running",
@@ -39,9 +39,9 @@ KILL_GRACE_SEC = 1.0
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 GIT_IDENT = [
     "-c",
-    "user.email=codex-skill@local",
+    "user.email=codex-worker-skill@local",
     "-c",
-    "user.name=codex-skill",
+    "user.name=codex-worker-skill",
     "-c",
     "commit.gpgsign=false",
 ]
@@ -63,7 +63,7 @@ def state_home() -> Path:
     override = os.environ.get("CODEX_SKILL_HOME")
     if override:
         return Path(override)
-    return Path.home() / ".codex" / "codex-skill"
+    return Path.home() / ".codex" / "codex-worker-skill"
 
 
 def codex_home() -> Path:
@@ -74,8 +74,12 @@ def codex_home() -> Path:
 
 
 def die(msg: str, code: int = 1) -> None:
-    print(f"codex-skill: {msg}", file=sys.stderr)
+    print(f"codex-worker-skill: {msg}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def note_refresh_models() -> None:
+    print(REFRESH_MODELS_MARK, file=sys.stderr)
 
 
 def now_iso() -> str:
@@ -297,7 +301,7 @@ def warn_terminal_leftovers(wt0: Path) -> None:
             )
             if sess and sess.get("phase") in TERMINAL_PHASES:
                 print(
-                    f"codex-skill: warning: leftover WT1 {wt1} from terminal session {sess['id']}",
+                    f"codex-worker-skill: warning: leftover WT1 {wt1} from terminal session {sess['id']}",
                     file=sys.stderr,
                 )
 
@@ -476,6 +480,7 @@ def find_codex() -> Path:
     ):
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return Path(candidate)
+    note_refresh_models()
     die("codex binary not found")
     raise AssertionError
 
@@ -633,7 +638,7 @@ def snapshot_git(wt0: Path, meta: Path, sid: str) -> tuple[str, str]:
     tree = git(["write-tree"], cwd=wt0, env=env).stdout.strip()
     c0 = git(["rev-parse", "HEAD"], cwd=wt0).stdout.strip()
     snap = git(
-        [*GIT_IDENT, "commit-tree", tree, "-p", c0, "-m", f"codex-skill snapshot {sid}"],
+        [*GIT_IDENT, "commit-tree", tree, "-p", c0, "-m", f"codex-worker-skill snapshot {sid}"],
         cwd=wt0,
         env=env,
     ).stdout.strip()
@@ -677,7 +682,7 @@ def snapshot_copy(wt0: Path, wt1: Path, meta: Path) -> str:
     refuse_custom_filters(wt1)
     git([*GIT_IDENT, "add", "-A"], cwd=wt1)
     refuse_custom_filters(wt1)
-    git([*GIT_IDENT, "commit", "--allow-empty", "-m", "codex-skill SNAP"], cwd=wt1)
+    git([*GIT_IDENT, "commit", "--allow-empty", "-m", "codex-worker-skill SNAP"], cwd=wt1)
     git(["clean", "-fdx"], cwd=wt1, check=False)
     check_indexed_sizes(wt1, os.environ.copy())
     snap = git(["rev-parse", "HEAD"], cwd=wt1).stdout.strip()
@@ -865,7 +870,7 @@ def copy_effective_git_attributes(wt0: Path, staging: Path) -> None:
         if not src.is_absolute():
             src = wt0 / src
         if src.is_file():
-            dest = staging / ".git" / "info" / "codex-skill-attributesFile"
+            dest = staging / ".git" / "info" / "codex-worker-skill-attributesFile"
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
             git(["config", "core.attributesFile", str(dest)], cwd=staging)
@@ -934,7 +939,7 @@ def apply_to_wt0(
 ) -> subprocess.CompletedProcess[Any]:
     env = os.environ.copy()
     if not git_mode:
-        env["GIT_DIR"] = str(wt0 / ".git-codex-skill-absent")
+        env["GIT_DIR"] = str(wt0 / ".git-codex-worker-skill-absent")
         env["GIT_WORK_TREE"] = str(wt0)
     args = ["apply"]
     if check_only:
@@ -954,6 +959,7 @@ def write_prompt(sess: dict[str, Any], task: str) -> Path:
         snap=sess["snap"],
         wt1=sess["wt1"],
         effort=sess["effort"],
+        model=sess["model"],
     )
     path = session_dir(sess["id"]) / "prompt.md"
     path.write_text(body)
@@ -970,6 +976,7 @@ def write_review_packet(sess: dict[str, Any], paths: list[str]) -> Path:
         f"- git_mode: {sess['git_mode']}",
         f"- C0: {sess.get('c0') or '(none)'}",
         f"- SNAP: {sess['snap']}",
+        f"- model: {sess.get('model')}",
         f"- effort: {sess['effort']}",
         f"- inherited network_access (best-effort parse): {sess.get('network_inherited')}",
         f"- auth_mode: {sess.get('auth_mode')}",
@@ -1172,8 +1179,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     if not task.strip():
         die("empty task")
     effort = args.effort or "high"
-    if effort not in EFFORTS:
-        die(f"unknown effort {effort!r}")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", effort):
+        die(f"invalid effort {effort!r}")
+    model = args.model
+    if not model or not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+        die("need --model <catalog slug>")
+    if model.endswith(("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")):
+        die(f"refusing Cursor-shaped model slug {model!r}")
     auth_mode = require_chatgpt_auth()
     git_mode, git_reason = detect_git_mode(wt0)
     if inside_session_checkout(wt0):
@@ -1204,6 +1216,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             "git_mode": git_mode,
             "git_reason": git_reason,
             "effort": effort,
+            "model": model,
             "scratch": str(scratch),
             "wt1": str(wt1),
             "created_at": now_iso(),
@@ -1304,7 +1317,7 @@ def run_codex(sess: dict[str, Any], prompt: Path) -> None:
         "-c",
         'cli_auth_credentials_store="file"',
         "-m",
-        "gpt-5.6-sol",
+        str(sess["model"]),
         "-c",
         f'model_reasoning_effort="{sess["effort"]}"',
         "--json",
@@ -1335,6 +1348,7 @@ def run_codex(sess: dict[str, Any], prompt: Path) -> None:
             except Exception:
                 live["codex_launch"] = "failed"
                 save_session(live)
+                note_refresh_models()
                 raise
             live = load_session(sess["id"])
             if live.get("phase") != "running":
@@ -1361,7 +1375,7 @@ def run_codex(sess: dict[str, Any], prompt: Path) -> None:
     try:
         sess = mutate_session(sess["id"], mut_exit, require_phase="running")
     except SystemExit:
-        print(f"codex-skill: session {sess['id']} moved during exec; not rewriting phase")
+        print(f"codex-worker-skill: session {sess['id']} moved during exec; not rewriting phase")
         sess = load_session(sess["id"])
         return
     reply = last.read_text() if last.is_file() else ""
@@ -1369,7 +1383,8 @@ def run_codex(sess: dict[str, Any], prompt: Path) -> None:
         reply = log.read_text()[-20000:]
     (meta / "reply.md").write_text(reply)
     if code != 0:
-        print(f"codex-skill: codex exec exited {code}", file=sys.stderr)
+        note_refresh_models()
+        print(f"codex-worker-skill: codex exec exited {code}", file=sys.stderr)
 
 
 def finish_after_exec(sess: dict[str, Any]) -> None:
@@ -1710,6 +1725,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(root),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -1737,6 +1753,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(root),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -1758,6 +1775,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(root),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -1826,6 +1844,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(pkg),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -1858,6 +1877,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(crlf_root),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -1976,6 +1996,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(f2d),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -2013,6 +2034,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(crlf_attr),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -2065,6 +2087,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(linked),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -2102,6 +2125,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
             "phase": "running",
             "apply_target": str(attr_root),
             "effort": "high",
+            "model": "gpt-5.6-sol",
             "auth_mode": "chatgpt",
             "network_inherited": False,
         }
@@ -2116,11 +2140,11 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
         git(["worktree", "remove", "--force", str(wt_af)], cwd=attr_root, check=False)
 
         saved_home = os.environ["CODEX_SKILL_HOME"]
-        os.environ["CODEX_SKILL_HOME"] = str(Path.home() / ".codex-skill-self-test-home")
+        os.environ["CODEX_SKILL_HOME"] = str(Path.home() / ".codex-worker-skill-self-test-home")
         try:
             refuse_bad_writable_roots(
                 Path.home(),
-                Path("/tmp/codex-skill-meta-probe"),
+                Path("/tmp/codex-worker-skill-meta-probe"),
                 Path.home() / "scratch" / "codex" / "x" / "wt",
             )
             check("metadata under tmp refused", False)
@@ -2136,11 +2160,12 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="codex-skill-run")
+    p = argparse.ArgumentParser(prog="codex-worker-skill-run")
     sub = p.add_subparsers(dest="cmd", required=True)
     start = sub.add_parser("start")
     start.add_argument("--wt0", required=True)
     start.add_argument("--task-file", required=True)
+    start.add_argument("--model", required=True)
     start.add_argument("--effort", default="high")
     start.add_argument("--session")
     start.set_defaults(func=cmd_start)

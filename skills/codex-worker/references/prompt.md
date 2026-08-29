@@ -2,6 +2,7 @@ You are Codex CLI in a one-shot `codex exec` session. Your cwd is the session wo
 
 $wt1
 
+Model for this run: $model
 Effort for this run: $effort
 Git mode: $git_mode
 C0 (user HEAD at session start): $c0

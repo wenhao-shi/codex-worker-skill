@@ -1,5 +1,5 @@
 interface:
-  display_name: "Codex"
+  display_name: "Codex worker"
   short_description: "One-shot local Codex CLI edit, then review before apply"
 policy:
   allow_implicit_invocation: false
