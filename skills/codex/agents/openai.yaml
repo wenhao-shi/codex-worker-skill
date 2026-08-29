@@ -1,0 +1,5 @@
+interface:
+  display_name: "Codex"
+  short_description: "One-shot local Codex CLI edit, then review before apply"
+policy:
+  allow_implicit_invocation: false
